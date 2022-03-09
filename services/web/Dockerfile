@@ -7,7 +7,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
         make autoconf automake libtool pkgconf \
 	g++ libglib2.0-dev swig bison flex gettext gawk \
-	wget ca-certificates bzip2 python3-dev unzip;
+	wget ca-certificates bzip2 python3-dev unzip git swig;
 
 ENV LANG C.UTF-8
     
@@ -50,8 +50,14 @@ RUN set -eux; \
     # make install ; \
     # cd ..; rm -rf finnish-tagtools-1.6.0;
 
+WORKDIR /usr/src
 
-FROM python:3.9.5-slim-buster
+RUN set -eux; \
+    git clone https://github.com/Traubert/nlp-tools.git; \
+    cd nlp-tools/word_embeddings/c++; \
+    make;
+
+FROM python:3.9-slim-bullseye
 WORKDIR /usr/src/app
 
 ENV PYTHONDONTWRITEBYTECODE 1
@@ -73,3 +79,7 @@ RUN pip install -r requirements.txt
 
 # copy project
 COPY . /usr/src/app/
+COPY --from=builder /usr/src/nlp-tools/word_embeddings/c++/_embutils.so /usr/src/app/texttools/
+COPY --from=builder /usr/src/nlp-tools/word_embeddings/c++/embutils.py /usr/src/app/texttools/
+
+
