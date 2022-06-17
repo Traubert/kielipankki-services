@@ -1,12 +1,30 @@
-version: '3.3'
+version: '3.7'
 
 services:
   web:
     build: ./services/web
-    command: python manage.py run -h 0.0.0.0
-    volumes:
-      - ./services/web/:/usr/src/app/
-    ports:
-      - 5000:5000
+    command: gunicorn --bind 0.0.0.0:5001 manage:app
+    expose:
+      - 5001
     env_file:
-      - ./.env.dev
+      - ./.env.prod
+  kaldi-serve:
+    build: ./services/kaldi-serve
+    command: /home/app/kaldi-serve-init
+    expose:
+      - 5002
+    env_file:
+      - ./.env.prod
+  nginx:
+    build: ./services/nginx
+    ports:
+      - 1337:80
+  redis:
+    build: ./services/redis
+    expose:
+      - 6379
+    # links:
+    #   - web
+    # depends_on:
+    #   - web
+#      - kaldi-serve
