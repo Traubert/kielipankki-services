@@ -5,17 +5,17 @@ WORKDIR /usr/src/hfst
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        make autoconf automake libtool pkgconf \
+        make autoconf automake libtool pkgconf libicu-dev \
 	g++ libglib2.0-dev swig bison flex gettext gawk \
 	wget ca-certificates bzip2 python3-dev unzip git swig;
 
 ENV LANG C.UTF-8
     
 RUN set -eux; \
-    wget https://github.com/hfst/hfst/releases/download/v3.15.3/hfst-3.15.3.tar.bz2; \
-    tar -x --bzip2 -f hfst-3.15.3.tar.bz2; \
-    rm -f hfst-3.15.3.tar.bz2; \
-    cd hfst-3.15.3; \
+    wget https://github.com/hfst/hfst/releases/download/v3.16.0/hfst-3.16.0.tar.bz2; \
+    tar -x --bzip2 -f hfst-3.16.0.tar.bz2; \
+    rm -f hfst-3.16.0.tar.bz2; \
+    cd hfst-3.16.0; \
     autoreconf -i; \
     ./configure --with-unicode-handler=glib \
         --without-sfst \
@@ -29,26 +29,19 @@ RUN set -eux; \
     make; \
     make install-strip; \
     cd python ; python3 setup.py build_ext --inplace; python3 setup.py install; \
-    cd ../../; rm -rf hfst-3.15.3;
+    cd ../../; rm -rf hfst-3.16.0;
 
 # COPY ./finnish-tagtools-1.6.0.zip ./
 
 RUN set -eux; \
-    wget https://korp.csc.fi/download/finnish-tagtools/v1.5/finnish-tagtools-1.5.1.zip; \
-    unzip finnish-tagtools-1.5.1.zip; \
-    rm -f finnish-tagtools-1.5.1.zip; \
-    cd finnish-tagtools-1.5.1; \
+    wget https://korp.csc.fi/download/finnish-tagtools/v1.6/finnish-tagtools-1.6.0.zip; \
+    unzip finnish-tagtools-1.6.0.zip; \
+    rm -f finnish-tagtools-1.6.0.zip; \
+    cd finnish-tagtools-1.6.0; \
     # for busybox
     sed -i 's/--target-directory=/-t /g' Makefile; \
     make install ; \
-    cd ..; rm -rf finnish-tagtools-1.5.1;
-    # unzip finnish-tagtools-1.6.0.zip; \
-    # rm -f finnish-tagtools-1.6.0.zip; \
-    # cd finnish-tagtools-1.6.0; \
-    # # for busybox
-    # sed -i 's/--target-directory=/-t /g' Makefile; \
-    # make install ; \
-    # cd ..; rm -rf finnish-tagtools-1.6.0;
+    cd ..; rm -rf finnish-tagtools-1.6.0;
 
 WORKDIR /usr/src
 

@@ -18,7 +18,7 @@ s24_sentiment = cnn_sentiment.s24
 
 # signal.signal(signal.SIGINT, signal_handler)
 
-@app.route('/fi/postag', methods=['POST'])
+@app.route('/text/fi/postag', methods=['POST'])
 def postag():
     tagger = Popen(["finnish-postag"], encoding = 'utf-8', stdin = PIPE, stdout = PIPE)
     out, err = tagger.communicate(request.get_data(as_text = True))
