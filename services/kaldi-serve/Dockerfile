@@ -1,5 +1,5 @@
-#FROM vernacularai/kaldi-serve:latest-py3.6
-FROM kaldi-serve:py3.6
+FROM vernacularai/kaldi-serve:latest-py3.6
+#FROM kaldi-serve:py3.6
 
 WORKDIR /home/app
 
