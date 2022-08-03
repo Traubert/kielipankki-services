@@ -31,6 +31,10 @@ decoder_lock = threading.Lock()
 
 submit_url = 'http://nginx:1337/audio/asr/fi/submit'
 
+def glue_morphs_in_transcript(transcript):
+    if '+' not in transcript: return transcript
+    return transcript.replace('+ ', '').replace(' +', '').replace('+', '')
+
 def valid_wav_header(data):
     if len(data) < 44:
         return False
@@ -44,20 +48,21 @@ def valid_wav_header(data):
         return False
     return True
 
-def decode(data):
+def decode(data, lock):
+    lock.acquire()
     with start_decoding(decoder):
         decoder.decode_wav_audio(data)
-        return decoder.get_decoded_results(10, word_level = True, bidi_streaming = False)
+        res = decoder.get_decoded_results(1, word_level = True, bidi_streaming = False)
+    lock.release()
+    return res
     
 def decode_and_commit(data, _id, lock):
     retvals = []
-    lock.acquire()
-    results = decode(data)
-    lock.release()
+    results = decode(data, lock)
     for result in results:
-        retvals.append({"transcript": result.transcript, "confidence": f'{result.confidence:.5f}'})
-        # for word in result.words:
-        #     retvals[-1]["transcript"] += f'{word.word} {word.start_time} {word.end_time}'
+        retvals.append({"transcript": glue_morphs_in_transcript(result.transcript),
+                        "confidence": result.confidence,
+                        "words": [{"word": word.word, "start": '{:.3f}'.format(word.start_time), "end": '{:.3f}'.format(word.end_time)} for word in result.words]})
     response = dict(params)
     response['time'] = datetime.datetime.now().strftime("%Y-%m-%d %X")
     response['responses'] = sorted(retvals, key = lambda x: x["confidence"],
