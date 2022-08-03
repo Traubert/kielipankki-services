@@ -71,6 +71,7 @@ def decode_and_commit(data, _id, lock):
     redis_conn.set(_id, json.dumps(response))
 
 def segmented(audio, _id):
+    '''Split audio, send parts to asr server, commit job id to redis. '''
     min_segment = 5.0
     segments = pydub.silence.split_on_silence(audio,
                                           min_silence_len = 360,
