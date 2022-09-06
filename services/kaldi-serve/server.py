@@ -21,18 +21,22 @@ from tempfile import TemporaryFile
 app = Flask("kaldi-serve")
 
 redis_conn = redis.Redis(host='redis', port=6379)
-if 'kaldi_load' not in redis_conn:
-    redis_conn.set('kaldi_load', json.dumps({platform.node(): {'decoding_queue_size': 0}}))
-else:
-    kaldi_load = json.loads(redis_conn.get('kaldi_load'))
-    if platform.node() not in kaldi_load:
-        kaldi_load[platform.node()] = {'decoding_queue_size': 0}
-        redis_conn.set('kaldi_load', json.dumps(kaldi_load))
-    elif 'decoding_queue_size' not in kaldi_load[platform.node()]:
-        kaldi_load[platform.node()]['decoding_queue_size'] = 0
-        redis_conn.set('kaldi_load', json.dumps(kaldi_load))
 queue_lock = redis.lock.Lock(redis_conn, "decoding queue lock",
                              blocking = True, blocking_timeout = 1.0)
+if queue_lock.acquire():
+    if 'kaldi_load' not in redis_conn:
+        redis_conn.set('kaldi_load', json.dumps({platform.node(): {'decoding_queue_size': 0}}))
+    else:
+        kaldi_load = json.loads(redis_conn.get('kaldi_load'))
+        if platform.node() not in kaldi_load:
+            kaldi_load[platform.node()] = {'decoding_queue_size': 0}
+            redis_conn.set('kaldi_load', json.dumps(kaldi_load))
+        elif 'decoding_queue_size' not in kaldi_load[platform.node()]:
+            kaldi_load[platform.node()]['decoding_queue_size'] = 0
+            redis_conn.set('kaldi_load', json.dumps(kaldi_load))
+    queue_lock.release()
+else:
+    logging.error("Couldn't acquire queue lock!")
 
 # chain model contains all const components to be shared across multiple threads
 model = ChainModel(parse_model_specs("model-spec.toml")[0])
@@ -47,19 +51,23 @@ submit_url = 'http://nginx:1337/audio/asr/fi/submit'
 def increment_decoding_queue_size():
     '''This should be called just before calls to decode_and_commit() or decode()'''
     if queue_lock.acquire():
-        kaldi_load = json.loads(redis_conn.get('kaldi_load'))
-        kaldi_load[platform.node()]['decoding_queue_size'] += 1
-        redis_conn.set('kaldi_load', json.dumps(kaldi_load))
-        logging.error(f'incremented queue size in {platform.node()} to ' + str(kaldi_load))
+        try:
+            kaldi_load = json.loads(redis_conn.get('kaldi_load'))
+            kaldi_load[platform.node()]['decoding_queue_size'] += 1
+            redis_conn.set('kaldi_load', json.dumps(kaldi_load))
+        except KeyError:
+            logging.error(f"Queue db was missing platform {platform.node()}")
         queue_lock.release()
     else:
         logging.error("Couldn't acquire queue lock!")
 def decrement_decoding_queue_size():
     if queue_lock.acquire():
-        kaldi_load = json.loads(redis_conn.get('kaldi_load'))
-        kaldi_load[platform.node()]['decoding_queue_size'] -= 1
-        redis_conn.set('kaldi_load', json.dumps(kaldi_load))
-        logging.error(f'decremented queue size in {platform.node()} to ' + str(kaldi_load))
+        try:
+            kaldi_load = json.loads(redis_conn.get('kaldi_load'))
+            kaldi_load[platform.node()]['decoding_queue_size'] -= 1
+            redis_conn.set('kaldi_load', json.dumps(kaldi_load))
+        except KeyError:
+            logging.error(f"Queue db was missing platform {platform.node()}")
         queue_lock.release()
     else:
         logging.error("Couldn't acquire queue lock!")
