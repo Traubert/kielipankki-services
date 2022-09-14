@@ -324,3 +324,11 @@ def route_asr():
                                    reverse = True)
   
     return jsonify(response)
+
+@app.route('/audio/asr/fi/queue', methods=["GET"])
+def route_queue():
+    kaldi_load = json.loads(redis_conn.get('kaldi_load'))
+    queue = 0
+    for pod in kaldi_load:
+        queue += kaldi_load[pod]["decoding_queue_size"]
+    return jsonify({"total decoding queue size": queue})
