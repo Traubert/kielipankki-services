@@ -16,7 +16,10 @@ import pydub.silence
 import requests
 import time
 import platform
+import re
 from tempfile import TemporaryFile
+
+MAX_CONTENT_LENGTH = 500*2**20
 
 app = Flask("kaldi-serve")
 
@@ -104,7 +107,7 @@ def decode_and_commit(data, _id, lock):
     for result in results:
         retvals.append({"transcript": glue_morphs_in_transcript(result.transcript),
                         "confidence": result.confidence,
-                        "words": [{"word": word.word, "start": '{:.3f}'.format(word.start_time), "end": '{:.3f}'.format(word.end_time)} for word in result.words]})
+                        "words": [{"word": word.word, "start": round(word.start_time, 3), "end": round(word.end_time, 3)} for word in result.words]})
     response = dict(params)
     if _id in redis_conn:
         response.update(json.loads(redis_conn.get(_id)))
@@ -112,7 +115,7 @@ def decode_and_commit(data, _id, lock):
     response['responses'] = sorted(retvals, key = lambda x: x["confidence"],
                                    reverse = True)
     response['status'] = 'done'
-    response['processing_finished'] = time.time()
+    response['processing_finished'] = round(time.time(), 3)
     redis_conn.set(_id, json.dumps(response))
 
 def segmented(audio, _id):
@@ -153,7 +156,7 @@ def segmented(audio, _id):
         audiobytes = f.read()
         response = requests.post(submit_url, data = audiobytes)
         jobs.append({'duration': segment.duration_seconds, 'jobid': json.loads(response.text)["jobid"]})
-    redis_conn.set(_id, json.dumps({'segments': jobs, 'processing_started': time.time()}))
+    redis_conn.set(_id, json.dumps({'segments': jobs, 'processing_started': round(time.time(), 3)}))
 
 @app.route('/audio/asr/fi/submit', methods=["POST"])
 def route_submit():
@@ -161,7 +164,7 @@ def route_submit():
     if not valid_wav_header(audio_bytes):
         return jsonify({'error': 'invalid wav header'})
     _id = str(uuid.uuid4())
-    redis_conn.set(_id, json.dumps({'status': 'pending', 'processing_started': time.time()}))
+    redis_conn.set(_id, json.dumps({'status': 'pending', 'processing_started': round(time.time(), 3)}))
     increment_decoding_queue_size()
     job = threading.Thread(target=decode_and_commit, args=(audio_bytes, _id, decoder_lock))
     job.start()
@@ -169,22 +172,47 @@ def route_submit():
 
 @app.route('/audio/asr/fi/submit_file', methods=["POST"])
 def route_submit_file():
+    if request.content_length >= MAX_CONTENT_LENGTH:
+        return jsonify({'error': f'body size exceeded maximum of {MAX_CONTENT_LENGTH} bytes'})
     args = request.args
     do_split = True
     if 'nosplit' in args and args['nosplit'].lower() == 'true':
         do_split = False
-    file_name = request.files['file'].filename
-    if '.' not in file_name:
-        return jsonify({'error': 'could not determine file type'})
-    extension = file_name[file_name.rindex('.')+1:]
-    
-    try:
-        audio = pydub.AudioSegment.from_file(request.files['file'], format=extension)
-    except Exception as ex:
-        return jsonify({'error': 'could not process file, ' + str(ex)})
-    
+    if request.content_type.startswith('multipart/form-data'):
+        file_name = request.files['file'].filename
+        if '.' not in file_name:
+            return jsonify({'error': 'could not determine file type'})
+        extension = file_name[file_name.rindex('.')+1:]
+        try:
+            audio = pydub.AudioSegment.from_file(request.files['file'], format=extension)
+        except Exception as ex:
+            return jsonify({'error': 'could not process file'})
+    else:
+        if request.content_type.startswith('audio/'):
+            if request.content_type.startswith('audio/mpeg'):
+                extension = 'mp3'
+            elif request.content_type.startswith('audio/vorbis') or content_type.startswith('audio/ogg'):
+                extension = 'ogg'
+            elif request.content_type.startswith('audio/wav') or content_type.startswith('audio/x-wav'):
+                extension = 'wav'
+        elif request.content_type.startswith('application/'):
+            extension = 'wav'
+        else:
+            return jsonify({'error': 'expected either HTML form or mimetype audio/mpeg, audio/vorbis, audio/ogg, audio/wav or audio/x-wav'})
+        audio_file = BytesIO(request.get_data(as_text = False))
+        
+        file_name = ''
+        if 'Content-Disposition' in request.headers:
+            match = re.search(r'filename="([^"]+)"', request.headers['Content-Disposition'])
+            if match:
+                file_name = match.group(1)
+                
+        try:
+            audio = pydub.AudioSegment.from_file(audio_file, format=extension)
+        except Exception as ex:
+            return jsonify({'error': 'could not process file'})
     _id = str(uuid.uuid4())
-    redis_conn.set(_id, json.dumps({'status': 'pending', 'processing_started': time.time()}))
+    redis_conn.set(_id, json.dumps({'status': 'pending', 'processing_started': round(time.time(), 3)}))
 
     if not do_split:
         f = TemporaryFile()
@@ -222,10 +250,10 @@ def route_query_job():
             if 'model' not in response:
                 response['model'] = segment_result['model']
             del segment_result['model']
-        segment_result["start"] = f'{running_time:.2f}'
+        segment_result["start"] = round(running_time, 3)
         running_time += duration
-        segment_result["stop"] = f'{running_time:.2f}'
-        segment_result["duration"] = f'{duration:.2f}'
+        segment_result["stop"] = round(running_time, 3)
+        segment_result["duration"] = round(running_time, 3)
         if 'processing_finished' in segment_result:
             segment_processing_finished = float(segment_result['processing_finished'])
             if segment_processing_finished  > processing_finished:
@@ -271,6 +299,7 @@ def route_query_job_tekstiks():
         segment_id = segment["jobid"]
         if segment_id not in redis_conn:
             retval["error"] = {"code": no_job_error, "message": "one or more job segment id's not found"}
+            retval["done"] = True
             return jsonify(retval)
         segment_result = json.loads(redis_conn.get(segment_id))
         if segment_result['status'] != 'done':
@@ -280,8 +309,8 @@ def route_query_job_tekstiks():
         if segment_result.get("processing_finished", 0.0) > processing_finished:
             processing_finished = segment_result["processing_finished"]
         duration = float(segment["duration"])
-        retval["result"]["sections"].append({"start": f'{running_time:.2f}',
-                                             "end": f'{running_time+duration:.2f}',
+        retval["result"]["sections"].append({"start": round(running_time, 3),
+                                             "end": round(running_time+duration, 3),
                                              "transcript": segment_result["responses"][0]["transcript"],
                                              "words": []})
         running_time += duration
@@ -300,7 +329,7 @@ def route_segmented():
     f = BytesIO(audio_bytes)
     audio = pydub.AudioSegment.from_file(f, format="wav")
     _id = str(uuid.uuid4())
-    redis_conn.set(_id, json.dumps({'status': 'pending', 'processing_started': time.time()}))
+    redis_conn.set(_id, json.dumps({'status': 'pending', 'processing_started': round(time.time(), 3)}))
     job = threading.Thread(target=segmented, args=(audio, _id))
     job.start()
     return jsonify({'jobid': _id})
