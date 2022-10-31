@@ -15,6 +15,11 @@ services:
       - 5002
     env_file:
       - ./.env.prod
+  finnish-forced-align:
+    build: ./services/finnish-forced-align
+    command: /home/app/finnish-forced-align-init
+    expose:
+      - 5003
   nginx:
     build: ./services/nginx
     ports:
