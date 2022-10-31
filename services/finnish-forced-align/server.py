@@ -27,8 +27,10 @@ STAGING_WRITE_BUSY = "STAGING_WRITE_BUSY"
 DATA_DIR_EMPTY = "DATA_DIR_EMPTY"
 
 DataInDir = '/opt/kaldi/egs/src_for_wav'
+DataInDirTxt = '/opt/kaldi/egs/src_for_txt'
 DataOutDir = '/opt/kaldi/egs/kohdistus'
 DataInDirStaging = '/home/app/wav_staging'
+DataInDirTxtStaging = '/home/app/txt_staging'
 
 redis_conn = redis.Redis(host='redis', port=6379)
 if 'finnish-forced-align-states' not in redis_conn:
@@ -50,15 +52,28 @@ def align():
     # staging_lock.acquire() # all file writes done
     # align_lock.acquire() # previous processing done
     # data_dir_lock_acquire() # previous files gone
+    logging.error("preparing data dir")
     prepare_data_dir()
     # staging_lock.release()
+    logging.error("starting subprocess")
+    logging.error(os.listdir(DataInDir))
+    logging.error(os.listdir(DataInDirTxt))
     completed_process = subprocess.run(
         ["/opt/kaldi/egs/align/aligning_with_Docker/bin/align_in_singularity.sh",
-         "phone-finnish-finnish.csv", "false", "false", "../src_for_wav" "no"],
+         "phone-finnish-finnish.csv", "false", "textDirTrue", DataInDir, DataInDirTxt],
         cwd = '/opt/kaldi/egs/align', stderr = subprocess.PIPE, stdout = subprocess.PIPE) # to capture args, pass stdout = subprocess.PIPE, stderr = subprocess.PIPE
-    # logging.error(str(completed_process.stdout, encoding = 'utf-8'))
-    # logging.error(str(completed_process.stderr, encoding = 'utf-8'))
+    try:
+        for root, dirs, files in os.walk("/opt/kaldi/egs/align/exp/"):
+            for filename in files:
+                if filename.endswith('log'):
+                    logging.error(filename)
+                    logging.error(open(os.join(root, filename)).read())
+    except Exception as ex:
+        logging.error(str(ex))
+    logging.error(str(completed_process.stdout, encoding = 'utf-8'))
+    logging.error(str(completed_process.stderr, encoding = 'utf-8'))
     # align_lock.release()
+    logging.error("submitting results")
     submit_results()
     # data_dir_lock_acquire()
     # return (completed_process.stdout, completed_process.stderr)
@@ -66,24 +81,34 @@ def align():
 def prepare_data_dir():
     if os.path.isdir(DataInDir) or os.path.isdir(DataOutDir):
         return False
-    if not os.path.isdir(DataInDirStaging):
+    if not os.path.isdir(DataInDirStaging) or not os.path.isdir(DataInDirTxtStaging):
         return False
     os.rename(DataInDirStaging, DataInDir)
+    os.rename(DataInDirTxtStaging, DataInDirTxt)
     os.mkdir(DataInDirStaging)
+    os.mkdir(DataInDirTxtStaging)
     os.mkdir(DataOutDir)
     return True
 
 def submit_results():
     dirname = os.listdir(DataOutDir)[0]
     id2result = {}
-    for filename in os.listdir(os.path.join(DataOutDir, dirname)):
-        if '.' not in filename:
-            continue
-        prefix, suffix = filename.split('.')
-        if prefix not in id2result:
-            id2result[prefix] = {suffix: open(os.path.join(DataOutDir, dirname, filename)).read()}
-        else:
-            id2result[prefix][suffix] = open(os.path.join(DataOutDir, dirname, filename)).read()
+    try:
+        for filename in os.listdir(os.path.join(DataOutDir, dirname)):
+            if '.' not in filename:
+                continue
+            logging.error(filename)
+            prefix, suffix = filename.split('.')
+            if prefix not in id2result:
+                id2result[prefix] = {suffix: open(os.path.join(DataOutDir, dirname, filename), encoding="utf-8").read()}
+            else:
+                id2result[prefix][suffix] = open(os.path.join(DataOutDir, dirname, filename), encoding="utf-8").read()
+                logging.error("found result " + prefix)
+    except Exception as ex:
+        logging.error("tried to submit results, got exception " + str(ex))
+    shutil.rmtree(DataInDir)
+    shutil.rmtree(DataInDirTxt)
+    shutil.rmtree(DataOutDir)
     for _id in id2result:
         response = json.loads(str(redis_conn.get(_id), encoding = 'utf-8'))
         response['status'] = 'done'
@@ -92,8 +117,6 @@ def submit_results():
         for suffix in id2result[_id]:
             response['results'][suffix] = id2result[_id][suffix]
         redis_conn.set(_id, json.dumps(response))
-    shutil.rmtree(DataInDir)
-    shutil.rmtree(DataOutDir)
 
 @app.route('/audio/align/fi/submit_file', methods=["POST"])
 def route_submit_file():
@@ -109,16 +132,21 @@ def route_submit_file():
         audio = pydub.AudioSegment.from_file(request.files['audio'], format=extension)
     except Exception as ex:
         return jsonify({'error': 'could not process audio file'})
-    transcript = str(request.files['transcript'].read(), encoding='utf-8')
+    transcript_bytes = request.files['transcript'].read()
+    logging.error("type of transcript_bytes was " + str(type(transcript_bytes)))
+    transcript = str(transcript_bytes, encoding='utf-8')
     if not validate_transcript(transcript):
         return jsonify({'error': 'transcript file appears invalid'})
     _id = str(uuid.uuid4())
     if not os.path.isdir(DataInDirStaging):
         os.mkdir(DataInDirStaging)
+    if not os.path.isdir(DataInDirTxtStaging):
+        os.mkdir(DataInDirTxtStaging)
     audio.export(os.path.join(DataInDirStaging, _id + '.wav'), format='wav')
-    open(os.path.join(DataInDirStaging, _id + '.txt'), 'w').write(transcript)
+    open(os.path.join(DataInDirTxtStaging, _id + '.txt'), 'w', encoding="utf-8").write(transcript)
     redis_conn.set(_id, json.dumps({'status': 'pending', 'task': 'finnish-forced-align', 'processing_started': round(time.time(), 3)}))
     job = threading.Thread(target=align)
+    logging.error("starting job")
     job.start()
     return jsonify({'jobid': _id, 'file': audio_file_name})
 
