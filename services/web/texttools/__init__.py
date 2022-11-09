@@ -32,7 +32,7 @@ def postag():
             sentences.append(this_sentence)
     return jsonify(postagged=sentences)
     
-@app.route('/fi/nertag', methods=['POST'])
+@app.route('/text/fi/nertag', methods=['POST'])
 def nertag():
     tagger = Popen(["finnish-nertag"], encoding='utf-8', stdin = PIPE, stdout = PIPE)
     out, err = tagger.communicate(request.get_data(as_text = True))
@@ -46,7 +46,7 @@ def nertag():
             sentences.append(this_sentence)
     return jsonify(nertagged=sentences)
     
-@app.route('/fi/sentiment', methods=['POST'])
+@app.route('/text/fi/sentiment', methods=['POST'])
 def sentiment():
     tokenizer = Popen(["finnish-tokenize"], encoding = 'utf-8',
                       stdin = PIPE, stdout = PIPE)
@@ -63,7 +63,7 @@ def sentiment():
     sentiments = s24_sentiment.list(sentences)
     return jsonify(sentiment=list(zip(sentences, sentiments)))
 
-@app.route('/fi/annotate', methods=['POST'])
+@app.route('/text/fi/annotate', methods=['POST'])
 def annotate():
     sentences = []
     data = request.get_data(as_text = True)
