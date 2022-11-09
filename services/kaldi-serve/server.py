@@ -191,9 +191,9 @@ def route_submit_file():
         if request.content_type.startswith('audio/'):
             if request.content_type.startswith('audio/mpeg'):
                 extension = 'mp3'
-            elif request.content_type.startswith('audio/vorbis') or content_type.startswith('audio/ogg'):
+            elif request.content_type.startswith('audio/vorbis') or request.content_type.startswith('audio/ogg'):
                 extension = 'ogg'
-            elif request.content_type.startswith('audio/wav') or content_type.startswith('audio/x-wav'):
+            elif request.content_type.startswith('audio/wav') or request.content_type.startswith('audio/x-wav'):
                 extension = 'wav'
         elif request.content_type.startswith('application/'):
             extension = 'wav'
