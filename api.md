@@ -4,34 +4,34 @@
 
 The following endpoints accept running text as the data payload, and directly return a json response. Eg:
 
-`$ curl --data "Voi voi olla." kielipankki.rahtiapp.fi/text/fi/postag | jq
-{
-  "postagged": [
-    [
-      [
-        "Voi",
-        "voi",
-        "[POS=PARTICLE]|[SUBCAT=INTERJECTION]"
-      ],
-      [
-        "voi",
-        "voida",
-        "[POS=VERB]|[VOICE=ACT]|[MOOD=INDV]|[TENSE=PRESENT]|[PERS=SG3]"
-      ],
-      [
-        "olla",
-        "olla",
-        "[POS=VERB]|[VOICE=ACT]|[INF=A]|[CASE=LAT]"
-      ],
-      [
-        ".",
-        ".",
-        "[POS=PUNCTUATION]"
-      ]
-    ]
-  ]
-}
-`
+	$ curl --data "Voi voi olla." kielipankki.rahtiapp.fi/text/fi/postag | jq
+	{
+		"postagged": [
+			[
+				[
+					"Voi",
+					"voi",
+					"[POS=PARTICLE]|[SUBCAT=INTERJECTION]"
+				],
+				[
+					"voi",
+					"voida",
+					"[POS=VERB]|[VOICE=ACT]|[MOOD=INDV]|[TENSE=PRESENT]|[PERS=SG3]"
+				],
+				[
+					"olla",
+					"olla",
+					"[POS=VERB]|[VOICE=ACT]|[INF=A]|[CASE=LAT]"
+				],
+				[
+					".",
+					".",
+					"[POS=PUNCTUATION]"
+				]
+			]
+		]
+	}
+
 
 #### `/text/fi/postag` (POST)
 
@@ -43,11 +43,10 @@ The following endpoints accept running text as the data payload, and directly re
 
 The following endpoints, intended to support slightly larger jobs that may time out, support a submit-and-query scheme. Eg:
 
-`$ curl --data '@text_to_process.txt' kielipankki.rahtiapp.fi/text/fi/nertag/submit
-{"jobid":"4afa7d86-3416-4993-8110-ab9a7e2de39e"}
-$ curl --data '4afa7d86-3416-4993-8110-ab9a7e2de39e' kielipankki.rahtiapp.fi/text/fi/nertag/query_job
-...verbose output...
-`
+	$ curl --data '@text_to_process.txt' kielipankki.rahtiapp.fi/text/fi/nertag/submit
+	{"jobid":"4afa7d86-3416-4993-8110-ab9a7e2de39e"}
+	$ curl --data '4afa7d86-3416-4993-8110-ab9a7e2de39e' kielipankki.rahtiapp.fi/text/fi/nertag/query_job
+	...verbose output...
 
 #### `/text/fi/sentiment/submit` (POST)
 
@@ -65,7 +64,7 @@ Submit a form with a `file` key, eg. `curl -F 'file=@audio.mp3' http://kielipank
   
 Example output:
   
-`{"file":"puhetta.mp3","jobid":"357f3518-afaa-45e9-bda7-b52a60b73000"}`
+	{"file":"puhetta.mp3","jobid":"357f3518-afaa-45e9-bda7-b52a60b73000"}
   
 Additional fields may appear, the `jobid` field is the important one.
   
@@ -75,7 +74,7 @@ Submit a wav file as the data payload, eg. `curl --data-binary @audio.wav https:
   
 Example output:
   
-`{"jobid":"337adadb-37ff-4492-9480-d2ffb1126932"}`
+	{"jobid":"337adadb-37ff-4492-9480-d2ffb1126932"}
   
 #### `/audio/asr/fi/query_job` (POST)
 
