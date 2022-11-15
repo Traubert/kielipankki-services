@@ -23,20 +23,24 @@ MAX_CONTENT_LENGTH = 500*2**20
 
 app = Flask("kaldi-serve")
 
+KALDI_LOAD = 'kaldi_load'
+ASR_SEGMENTS = 'asr_segments'
+ASR = 'asr'
+
 redis_conn = redis.Redis(host='redis', port=6379)
 queue_lock = redis.lock.Lock(redis_conn, "decoding queue lock",
                              blocking = True, blocking_timeout = 1.0)
 if queue_lock.acquire():
-    if 'kaldi_load' not in redis_conn:
-        redis_conn.set('kaldi_load', json.dumps({platform.node(): {'decoding_queue_size': 0}}))
+    if KALDI_LOAD not in redis_conn:
+        redis_conn.set(KALDI_LOAD, json.dumps({platform.node(): {'decoding_queue_size': 0}}))
     else:
-        kaldi_load = json.loads(redis_conn.get('kaldi_load'))
+        kaldi_load = json.loads(redis_conn.get(KALDI_LOAD))
         if platform.node() not in kaldi_load:
             kaldi_load[platform.node()] = {'decoding_queue_size': 0}
-            redis_conn.set('kaldi_load', json.dumps(kaldi_load))
+            redis_conn.set(KALDI_LOAD, json.dumps(kaldi_load))
         elif 'decoding_queue_size' not in kaldi_load[platform.node()]:
             kaldi_load[platform.node()]['decoding_queue_size'] = 0
-            redis_conn.set('kaldi_load', json.dumps(kaldi_load))
+            redis_conn.set(KALDI_LOAD, json.dumps(kaldi_load))
     queue_lock.release()
 else:
     logging.error("Couldn't acquire queue lock!")
@@ -55,9 +59,9 @@ def increment_decoding_queue_size():
     '''This should be called just before calls to decode_and_commit() or decode()'''
     if queue_lock.acquire():
         try:
-            kaldi_load = json.loads(redis_conn.get('kaldi_load'))
+            kaldi_load = json.loads(redis_conn.get(KALDI_LOAD))
             kaldi_load[platform.node()]['decoding_queue_size'] += 1
-            redis_conn.set('kaldi_load', json.dumps(kaldi_load))
+            redis_conn.set(KALDI_LOAD, json.dumps(kaldi_load))
         except KeyError:
             logging.error(f"Queue db was missing platform {platform.node()}")
         queue_lock.release()
@@ -66,9 +70,9 @@ def increment_decoding_queue_size():
 def decrement_decoding_queue_size():
     if queue_lock.acquire():
         try:
-            kaldi_load = json.loads(redis_conn.get('kaldi_load'))
+            kaldi_load = json.loads(redis_conn.get(KALDI_LOAD))
             kaldi_load[platform.node()]['decoding_queue_size'] -= 1
-            redis_conn.set('kaldi_load', json.dumps(kaldi_load))
+            redis_conn.set(KALDI_LOAD, json.dumps(kaldi_load))
         except KeyError:
             logging.error(f"Queue db was missing platform {platform.node()}")
         queue_lock.release()
@@ -119,7 +123,11 @@ def decode_and_commit(data, _id, lock):
     redis_conn.set(_id, json.dumps(response))
 
 def segmented(audio, _id):
-    '''Split audio, send parts to asr server, commit job id to redis. '''
+    '''Split audio, send parts to asr server, commit job ids to redis. '''
+    if _id in redis_conn:
+        redis_entry = json.loads(redis_conn.get(_id))
+    else:
+        redis_entry = {'type': ASR_SEGMENTS, 'processing_started': round(time.time(), 3)}
     min_segment = 5.0
     segments = pydub.silence.split_on_silence(audio,
                                           min_silence_len = 360,
@@ -155,16 +163,20 @@ def segmented(audio, _id):
         f.seek(0)
         audiobytes = f.read()
         response = requests.post(submit_url, data = audiobytes)
-        jobs.append({'duration': segment.duration_seconds, 'jobid': json.loads(response.text)["jobid"]})
-    redis_conn.set(_id, json.dumps({'segments': jobs, 'processing_started': round(time.time(), 3)}))
+        jobs.append({'type': ASR, 'duration': segment.duration_seconds, 'jobid': json.loads(response.text)["jobid"]})
+    redis_entry['segments'] = jobs
+    redis_conn.set(_id, json.dumps(redis_entry))
 
+def sanitize_response(response):
+    response.pop('type', None)
+    
 @app.route('/audio/asr/fi/submit', methods=["POST"])
 def route_submit():
     audio_bytes = bytes(request.get_data(as_text = False))
     if not valid_wav_header(audio_bytes):
         return jsonify({'error': 'invalid wav header'})
     _id = str(uuid.uuid4())
-    redis_conn.set(_id, json.dumps({'status': 'pending', 'processing_started': round(time.time(), 3)}))
+    redis_conn.set(_id, json.dumps({'type': ASR, 'status': 'pending', 'processing_started': round(time.time(), 3)}))
     increment_decoding_queue_size()
     job = threading.Thread(target=decode_and_commit, args=(audio_bytes, _id, decoder_lock))
     job.start()
@@ -212,7 +224,6 @@ def route_submit_file():
         except Exception as ex:
             return jsonify({'error': 'could not process file'})
     _id = str(uuid.uuid4())
-    redis_conn.set(_id, json.dumps({'status': 'pending', 'processing_started': round(time.time(), 3)}))
 
     if not do_split:
         f = TemporaryFile()
@@ -220,9 +231,11 @@ def route_submit_file():
         f.seek(0)
         audio_bytes = f.read()
         increment_decoding_queue_size()
+        redis_conn.set(_id, json.dumps({'type': ASR, 'status': 'pending', 'processing_started': round(time.time(), 3)}))
         job = threading.Thread(target=decode_and_commit, args=(audio_bytes, _id, decoder_lock))
         job.start()
     else:
+        redis_conn.set(_id, json.dumps({'type': ASR_SEGMENTS, 'status': 'pending', 'processing_started': round(time.time(), 3)}))
         job = threading.Thread(target=segmented, args=(audio, _id))
         job.start()
     return jsonify({'jobid': _id, 'file': file_name})
@@ -234,8 +247,12 @@ def route_query_job():
     if _id not in redis_conn:
         return jsonify({'error': f'job id not available'})
     response = json.loads(redis_conn.get(_id))
-    if 'segments' not in response:
+    if response.get('type') == ASR:
         return response
+    if response.get('type') != ASR_SEGMENTS:
+        return jsonify({'error': 'job id not available'})
+    if 'segments' not in response:
+        return jsonify({'error': 'internal server error'})
     processing_finished = 0.0
     running_time = 0.0
     for i in range(len(response['segments'])):
@@ -261,6 +278,7 @@ def route_query_job():
         response["segments"][i].update(segment_result)
     response['processing_finished'] = processing_finished
     response['status'] = 'done'
+    sanitize_response(response)
     return jsonify(response)
 
 @app.route('/audio/asr/fi/query_job/tekstiks', methods=["POST"])
@@ -276,6 +294,11 @@ def route_query_job_tekstiks():
         retval["error"] = {"code": no_job_error, "message": "job id not found"}
         return jsonify(retval)
     retval.update(json.loads(redis_conn.get(_id)))
+    if retval.get('type') not in (ASR, ASR_SEGMENTS):
+        retval["done"] = True
+        retval["error"] = {"code": no_job_error, "message": "job id not found"}
+        sanitize_response(retval)
+        return jsonify(retval)
     retval["result"] = {"speakers": {"S0": {}}, "sections": []}
     running_time = 0.0
     processing_finished = 0.0
@@ -316,9 +339,11 @@ def route_query_job_tekstiks():
         running_time += duration
         if "words" in segment_result["responses"][0]:
             retval["result"]["sections"][-1]["words"] = segment_result["responses"][0]["words"]
+    retval["status"] = "done"
     retval["done"] = True
     retval["processing_finished"] = processing_finished
     del retval['segments']
+    sanitize_response(retval)
     return jsonify(retval)
 
 @app.route('/audio/asr/fi/segmented', methods=["POST"])
@@ -329,7 +354,7 @@ def route_segmented():
     f = BytesIO(audio_bytes)
     audio = pydub.AudioSegment.from_file(f, format="wav")
     _id = str(uuid.uuid4())
-    redis_conn.set(_id, json.dumps({'status': 'pending', 'processing_started': round(time.time(), 3)}))
+    redis_conn.set(_id, json.dumps({'type': ASR_SEGMENTS, 'status': 'pending', 'processing_started': round(time.time(), 3)}))
     job = threading.Thread(target=segmented, args=(audio, _id))
     job.start()
     return jsonify({'jobid': _id})
@@ -356,7 +381,7 @@ def route_asr():
 
 @app.route('/audio/asr/fi/queue', methods=["GET"])
 def route_queue():
-    kaldi_load = json.loads(redis_conn.get('kaldi_load'))
+    kaldi_load = json.loads(redis_conn.get(KALDI_LOAD))
     queue = 0
     for pod in kaldi_load:
         queue += kaldi_load[pod]["decoding_queue_size"]
