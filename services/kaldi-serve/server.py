@@ -248,6 +248,7 @@ def route_query_job():
         return jsonify({'error': f'job id not available'})
     response = json.loads(redis_conn.get(_id))
     if response.get('type') == ASR:
+        sanitize_response(response)
         return response
     if response.get('type') != ASR_SEGMENTS:
         return jsonify({'error': 'job id not available'})
