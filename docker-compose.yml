@@ -3,7 +3,7 @@ version: '3.7'
 services:
   web:
     build: ./services/web
-    command: gunicorn --bind 0.0.0.0:5001 manage:app
+    command: gunicorn --bind 0.0.0.0:5001 manage:app --timeout 600
     expose:
       - 5001
     env_file:
