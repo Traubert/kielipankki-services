@@ -17,7 +17,7 @@ import requests
 import time
 import platform
 import re
-from tempfile import TemporaryFile
+from tempfile import TemporaryFile, NamedTemporaryFile
 
 MAX_CONTENT_LENGTH = 500*2**20
 
@@ -223,6 +223,16 @@ def route_submit_file():
             audio = pydub.AudioSegment.from_file(audio_file, format=extension)
         except Exception as ex:
             return jsonify({'error': 'could not process file'})
+
+    if extension == 'wav':
+        if audio.sample_width > 2 or audio.channels > 1:
+            downsample_tmp_read_f = NamedTemporaryFile(suffix = '.wav')
+            audio.export(downsample_tmp_read_f.name, format='wav')
+            downsample_tmp_write_f = NamedTemporaryFile(suffix = '.wav')
+            # For some reason passing arguments to ffmpeg through pydub doesn't seem to work, so we do it this way.
+            # -ac 1 means make it mono if it isn't already, and -c:a pcm_s16le means to use the standard 16 bit encoder for the audio codec
+            downsampler = subprocess.run(["ffmpeg", "-i", f"{downsample_tmp_read_f.name}", "-ac", "1", "-c:a", "pcm_s16le", f"{downsample_tmp_write_f.name}"])
+            audio = pydub.AudioSegment.from_file(downsample_tmp_write_f.name, format=extension)
     _id = str(uuid.uuid4())
 
     if not do_split:
