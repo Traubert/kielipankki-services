@@ -32,17 +32,13 @@ redis_conn = redis.Redis(host='redis', port=6379)
 
 # chain model contains all const components to be shared across multiple threads
 model = ChainModel(parse_model_specs("model-spec.toml")[0])
-params = toml.load("model-spec.toml")
+model_params = toml.load("model-spec.toml")["model"][0]
 
 # initialize a decoder that references the chain model
 decoder = Decoder(model)
 decoder_lock = threading.Lock()
 
 submit_url = 'http://nginx:1337/audio/asr/fi/submit'
-
-def glue_morphs_in_transcript(transcript):
-    if '+' not in transcript: return transcript
-    return transcript.replace('+ ', '').replace(' +', '').replace('+', '')
 
 def valid_wav_header(data):
     if len(data) < 44:
@@ -66,18 +62,15 @@ def decode(data, lock):
     return res
     
 def decode_and_commit(data, _id, lock):
-    retvals = []
-    results = decode(data, lock)
-    for result in results:
-        retvals.append({"transcript": glue_morphs_in_transcript(result.transcript),
-                        "confidence": result.confidence,
-                        "words": [{"word": word.word, "start": round(word.start_time, 3), "end": round(word.end_time, 3)} for word in result.words]})
-    response = dict(params)
+    result = decode(data, lock)[0] # only ever one result here
+    response = {'model': model_params}
     if _id in redis_conn:
         response.update(json.loads(redis_conn.get(_id)))
     response['time'] = datetime.datetime.now().strftime("%Y-%m-%d %X")
-    response['responses'] = sorted(retvals, key = lambda x: x["confidence"],
-                                   reverse = True)
+    response['responses'] = [
+        {"transcript": result.transcript,
+         "confidence": round(result.confidence, 5),
+         "words": [{"word": word.word, "start": round(word.start_time, 3), "end": round(word.end_time, 3)} for word in result.words]}]
     response['status'] = 'done'
     response['processing_finished'] = round(time.time(), 3)
     redis_conn.set(_id, json.dumps(response))
