@@ -17,7 +17,8 @@ import requests
 import time
 import platform
 import re
-from tempfile import TemporaryFile
+import subprocess
+from tempfile import TemporaryFile, NamedTemporaryFile
 
 MAX_CONTENT_LENGTH = 500*2**20
 
@@ -28,22 +29,6 @@ ASR_SEGMENTS = 'asr_segments'
 ASR = 'asr'
 
 redis_conn = redis.Redis(host='redis', port=6379)
-queue_lock = redis.lock.Lock(redis_conn, "decoding queue lock",
-                             blocking = True, blocking_timeout = 1.0)
-if queue_lock.acquire():
-    if KALDI_LOAD not in redis_conn:
-        redis_conn.set(KALDI_LOAD, json.dumps({platform.node(): {'decoding_queue_size': 0}}))
-    else:
-        kaldi_load = json.loads(redis_conn.get(KALDI_LOAD))
-        if platform.node() not in kaldi_load:
-            kaldi_load[platform.node()] = {'decoding_queue_size': 0}
-            redis_conn.set(KALDI_LOAD, json.dumps(kaldi_load))
-        elif 'decoding_queue_size' not in kaldi_load[platform.node()]:
-            kaldi_load[platform.node()]['decoding_queue_size'] = 0
-            redis_conn.set(KALDI_LOAD, json.dumps(kaldi_load))
-    queue_lock.release()
-else:
-    logging.error("Couldn't acquire queue lock!")
 
 # chain model contains all const components to be shared across multiple threads
 model = ChainModel(parse_model_specs("model-spec.toml")[0])
@@ -54,30 +39,6 @@ decoder = Decoder(model)
 decoder_lock = threading.Lock()
 
 submit_url = 'http://nginx:1337/audio/asr/fi/submit'
-
-def increment_decoding_queue_size():
-    '''This should be called just before calls to decode_and_commit() or decode()'''
-    if queue_lock.acquire():
-        try:
-            kaldi_load = json.loads(redis_conn.get(KALDI_LOAD))
-            kaldi_load[platform.node()]['decoding_queue_size'] += 1
-            redis_conn.set(KALDI_LOAD, json.dumps(kaldi_load))
-        except KeyError:
-            logging.error(f"Queue db was missing platform {platform.node()}")
-        queue_lock.release()
-    else:
-        logging.error("Couldn't acquire queue lock!")
-def decrement_decoding_queue_size():
-    if queue_lock.acquire():
-        try:
-            kaldi_load = json.loads(redis_conn.get(KALDI_LOAD))
-            kaldi_load[platform.node()]['decoding_queue_size'] -= 1
-            redis_conn.set(KALDI_LOAD, json.dumps(kaldi_load))
-        except KeyError:
-            logging.error(f"Queue db was missing platform {platform.node()}")
-        queue_lock.release()
-    else:
-        logging.error("Couldn't acquire queue lock!")
 
 def glue_morphs_in_transcript(transcript):
     if '+' not in transcript: return transcript
@@ -102,7 +63,6 @@ def decode(data, lock):
         decoder.decode_wav_audio(data)
         res = decoder.get_decoded_results(1, word_level = True, bidi_streaming = False)
     lock.release()
-    decrement_decoding_queue_size()
     return res
     
 def decode_and_commit(data, _id, lock):
@@ -177,7 +137,6 @@ def route_submit():
         return jsonify({'error': 'invalid wav header'})
     _id = str(uuid.uuid4())
     redis_conn.set(_id, json.dumps({'type': ASR, 'status': 'pending', 'processing_started': round(time.time(), 3)}))
-    increment_decoding_queue_size()
     job = threading.Thread(target=decode_and_commit, args=(audio_bytes, _id, decoder_lock))
     job.start()
     return jsonify({'jobid': _id})
@@ -223,6 +182,16 @@ def route_submit_file():
             audio = pydub.AudioSegment.from_file(audio_file, format=extension)
         except Exception as ex:
             return jsonify({'error': 'could not process file'})
+
+    if extension == 'wav':
+        if audio.sample_width > 2 or audio.channels > 1:
+            downsample_tmp_read_f = NamedTemporaryFile(suffix = '.wav')
+            audio.export(downsample_tmp_read_f.name, format='wav')
+            downsample_tmp_write_f = NamedTemporaryFile(suffix = '.wav')
+            # For some reason passing arguments to ffmpeg through pydub doesn't seem to work, so we do it this way.
+            # -y means overwrite the (temporary) output file, -ac 1 means make it mono if it isn't already, and -c:a pcm_s16le means to use the standard 16 bit encoder for the audio codec
+            downsampler = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", f"{downsample_tmp_read_f.name}", "-ac", "1", "-c:a", "pcm_s16le", f"{downsample_tmp_write_f.name}"])
+            audio = pydub.AudioSegment.from_file(downsample_tmp_write_f.name, format=extension)
     _id = str(uuid.uuid4())
 
     if not do_split:
@@ -230,7 +199,6 @@ def route_submit_file():
         audio.export(f, format='wav')
         f.seek(0)
         audio_bytes = f.read()
-        increment_decoding_queue_size()
         redis_conn.set(_id, json.dumps({'type': ASR, 'status': 'pending', 'processing_started': round(time.time(), 3)}))
         job = threading.Thread(target=decode_and_commit, args=(audio_bytes, _id, decoder_lock))
         job.start()
@@ -365,11 +333,7 @@ def route_asr():
     audio_bytes = bytes(request.get_data(as_text = False))
     if not valid_wav_header(audio_bytes):
         return jsonify({'error': 'invalid wav header'})
-
-    increment_decoding_queue_size()
     alts = decode(audio_bytes, decoder_lock)
-    decrement_decoding_queue_size()
-    
     retvals = []
     for alt in alts:
         retvals.append({"transcript": alt.transcript, "confidence": alt.confidence})
@@ -382,8 +346,4 @@ def route_asr():
 
 @app.route('/audio/asr/fi/queue', methods=["GET"])
 def route_queue():
-    kaldi_load = json.loads(redis_conn.get(KALDI_LOAD))
-    queue = 0
-    for pod in kaldi_load:
-        queue += kaldi_load[pod]["decoding_queue_size"]
-    return jsonify({"total decoding queue size": queue})
+    return jsonify({})
