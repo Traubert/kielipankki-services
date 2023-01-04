@@ -30,7 +30,9 @@ DataInDir = '/opt/kaldi/egs/src_for_wav'
 DataOutDir = '/opt/kaldi/egs/kohdistus'
 DataInDirStaging = '/home/app/wav_staging'
 
-redis_conn = redis.Redis(host='redis', port=6379)
+redis_conn = redis.Redis(host='redis', port=6379, decode_responses = True)
+
+expiry_time = 60*60*24*10
 
 def validate_transcript(transcript):
     return True
@@ -62,13 +64,12 @@ def submit_results():
     shutil.rmtree(DataInDir)
     shutil.rmtree(DataOutDir)
     for _id in id2result:
-        response = json.loads(str(redis_conn.get(_id), encoding = 'utf-8'))
-        response['status'] = 'done'
-        response['results'] = {}
-        response['processing_finished'] = round(time.time(), 3)
+        response = {'status': 'done', 'processing_finished': round(time.time(), 3)}
+        results = {}
         for suffix in id2result[_id]:
-            response['results'][suffix] = id2result[_id][suffix]
-        redis_conn.set(_id, json.dumps(response))
+            results[suffix] = id2result[_id][suffix]
+        response['results'] = json.dumps(results)
+        redis_conn.hset(_id, mapping = response)
 
 @app.route('/audio/align/fi/submit_file', methods=["POST"])
 def route_submit_file():
@@ -92,7 +93,8 @@ def route_submit_file():
     os.mkdir(DataInDirStaging)
     audio.export(os.path.join(DataInDirStaging, _id + '.wav'), format='wav')
     open(os.path.join(DataInDirStaging, _id + '.txt'), 'w', encoding="utf-8").write(transcript)
-    redis_conn.set(_id, json.dumps({'status': 'pending', 'task': 'finnish-forced-align', 'processing_started': round(time.time(), 3)}))
+    redis_conn.hset(_id, mapping = {'status': 'pending', 'task': 'finnish-forced-align', 'processing_started': round(time.time(), 3)})
+    redis_conn.expire(_id, expiry_time)
     wait_counter = 0
     while not_ready_for_processing():
         time.sleep(1)
@@ -110,4 +112,11 @@ def route_query_job():
     _id = request.get_data(as_text = True)
     if _id not in redis_conn:
         return jsonify({'error': 'job id not available'})
-    return jsonify(json.loads(str(redis_conn.get(_id), encoding='utf-8')))
+    redis_hash = redis_conn.hgetall(_id)
+    if 'processing_started' in redis_hash:
+        redis_hash['processing_started'] = float(
+            redis_hash['processing_started'])
+    if 'processing_finished' in redis_hash:
+        redis_hash['processing_finished'] = float(
+            redis_hash['processing_finished'])
+    return jsonify(redis_hash)
