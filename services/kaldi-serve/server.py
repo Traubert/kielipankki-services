@@ -25,6 +25,7 @@ app = Flask("kaldi-serve")
 
 ASR_SEGMENTS = 'asr_segments'
 ASR = 'asr'
+expiry_time = 60*60*24*10
 
 redis_conn = redis.Redis(host='redis', port=6379, decode_responses=True)
 
@@ -145,6 +146,7 @@ def route_submit():
     redis_conn.hset(_id, mapping = {'type': ASR,
                                     'status': 'pending',
                                     'processing_started': round(time.time(), 3)})
+    redis_conn.expire(_id, expiry_time)
     job = threading.Thread(target=decode_and_commit, args=(audio_bytes, _id, decoder_lock))
     job.start()
     return jsonify({'jobid': _id})
@@ -210,12 +212,14 @@ def route_submit_file():
         redis_conn.hset(_id, mapping = {'type': ASR,
                                         'status': 'pending',
                                         'processing_started': round(time.time(), 3)})
+        redis_conn.expire(_id, expiry_time)
         job = threading.Thread(target=decode_and_commit, args=(audio_bytes, _id, decoder_lock))
         job.start()
     else:
         redis_conn.hset(_id, mapping = {'type': ASR_SEGMENTS,
                                         'status': 'pending',
                                         'processing_started': round(time.time(), 3)})
+        redis_conn.expire(_id, expiry_time)
         job = threading.Thread(target=segmented, args=(audio, _id))
         job.start()
     return jsonify({'jobid': _id, 'file': file_name})
@@ -248,7 +252,7 @@ def route_query_job():
             return jsonify({'status': 'pending'})
         duration = float(segment["duration"])
         segment_result = json.loads(segment_redis_hash.get('response'))
-        update_response_from_redis_hash(segment_result, redis_hash)
+        update_response_from_redis_hash(segment_result, segment_redis_hash)
         segment_result["start"] = round(running_time, 3)
         running_time += duration
         segment_result["stop"] = round(running_time, 3)
@@ -334,6 +338,7 @@ def route_segmented():
     redis_conn.hset(_id, mapping = {'type': ASR_SEGMENTS,
                                     'status': 'pending',
                                     'processing_started': round(time.time(), 3)})
+    redis_conn.expire(_id, expiry_time)
     job = threading.Thread(target=segmented, args=(audio, _id))
     job.start()
     return jsonify({'jobid': _id})
