@@ -25,12 +25,12 @@ time.sleep(1)
 while True:
     query_response = requests.post(query_url, data = response_d['jobid'])
     query_response_d = json.loads(query_response.text)
-    if ('status' in query_response_d and query_response_d['status'] == 'pending') or ('done' in query_response_d and query_response_d['done'] == False):
+    if ('status' in query_response_d and query_response_d['status'] == 'pending') or\
+       ('done' in query_response_d and query_response_d['done'] == False):
         time.sleep(1)
         continue
     else:
-        print(json.dumps(query_response_d, indent=4))
         duration = query_response_d['processing_finished'] - query_response_d['processing_started']
-        print(f'Got result in {duration}')
         print(json.dumps(query_response_d, indent=4))
+        print(f'Got result in {duration}')
         break
