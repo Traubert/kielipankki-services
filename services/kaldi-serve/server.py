@@ -177,7 +177,7 @@ def route_submit_file():
             return jsonify({'error': 'could not process file'})
 
     if extension == 'wav':
-        if audio.sample_width > 2 or audio.channels > 1:
+        if audio.sample_width != 2 or audio.channels > 1:
             downsample_tmp_read_f = NamedTemporaryFile(suffix = '.wav')
             audio.export(downsample_tmp_read_f.name, format='wav')
             downsample_tmp_write_f = NamedTemporaryFile(suffix = '.wav')
