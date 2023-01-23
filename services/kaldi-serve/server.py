@@ -7,7 +7,6 @@ from kaldiserve import ChainModel, Decoder, parse_model_specs, start_decoding
 import sys
 import logging
 import toml
-import datetime
 import redis
 import uuid
 import threading
@@ -24,11 +23,35 @@ MAX_CONTENT_LENGTH = 500*2**20
 
 app = Flask("kaldi-serve")
 
-KALDI_LOAD = 'kaldi_load'
 ASR_SEGMENTS = 'asr_segments'
 ASR = 'asr'
+expiry_time = 60*60*24*10
 
-redis_conn = redis.Redis(host='redis', port=6379)
+redis_conn = redis.Redis(host='redis', port=6379, decode_responses=True)
+
+# REDIS DATA MODEL
+# ----------------
+# Jobids are UUID strings. These jobids are used as redis keys.
+# The values for jobid keys are redis hashes. The following fields should ALWAYS
+# be present:
+#
+# 1) type (ASR, ASR_SEGMENTS etc.)
+# 2) status (done, pending etc.)
+# 3) processing_started (unix timestamp)
+#
+# Additionally, if the following are known, they will be in the hash (rather than in
+# a json blob somewhere)
+#
+# 4) processing_finished
+# 5) segments (json list of {duration, jobid})
+# 6) response (json object)
+
+def update_response_from_redis_hash(response, redis_hash):
+    response.update({
+        'status': redis_hash.get('status'),
+        'processing_started': float(redis_hash.get('processing_started'))})
+    if 'processing_finished' in redis_hash:
+        response['processing_finished'] = float(redis_hash['processing_finished'])
 
 # chain model contains all const components to be shared across multiple threads
 model = ChainModel(parse_model_specs("model-spec.toml")[0])
@@ -63,24 +86,18 @@ def decode(data, lock):
     
 def decode_and_commit(data, _id, lock):
     result = decode(data, lock)[0] # only ever one result here
-    response = {'model': model_params}
-    if _id in redis_conn:
-        response.update(json.loads(redis_conn.get(_id)))
-    response['time'] = datetime.datetime.now().strftime("%Y-%m-%d %X")
+    response = {}
     response['responses'] = [
         {"transcript": result.transcript,
          "confidence": round(result.confidence, 5),
          "words": [{"word": word.word, "start": round(word.start_time, 3), "end": round(word.end_time, 3)} for word in result.words]}]
-    response['status'] = 'done'
-    response['processing_finished'] = round(time.time(), 3)
-    redis_conn.set(_id, json.dumps(response))
+    redis_conn.hset(_id, mapping = {
+        'status': 'done',
+        'processing_finished': round(time.time(), 3),
+        'response': json.dumps(response)})
 
 def segmented(audio, _id):
     '''Split audio, send parts to asr server, commit job ids to redis. '''
-    if _id in redis_conn:
-        redis_entry = json.loads(redis_conn.get(_id))
-    else:
-        redis_entry = {'type': ASR_SEGMENTS, 'processing_started': round(time.time(), 3)}
     min_segment = 5.0
     segments = pydub.silence.split_on_silence(audio,
                                           min_silence_len = 360,
@@ -116,20 +133,19 @@ def segmented(audio, _id):
         f.seek(0)
         audiobytes = f.read()
         response = requests.post(submit_url, data = audiobytes)
-        jobs.append({'type': ASR, 'duration': segment.duration_seconds, 'jobid': json.loads(response.text)["jobid"]})
-    redis_entry['segments'] = jobs
-    redis_conn.set(_id, json.dumps(redis_entry))
+        jobs.append({'duration': segment.duration_seconds, 'jobid': json.loads(response.text)["jobid"]})
+    redis_conn.hset(_id, key = 'segments', value = json.dumps(jobs))
 
-def sanitize_response(response):
-    response.pop('type', None)
-    
 @app.route('/audio/asr/fi/submit', methods=["POST"])
 def route_submit():
     audio_bytes = bytes(request.get_data(as_text = False))
     if not valid_wav_header(audio_bytes):
         return jsonify({'error': 'invalid wav header'})
     _id = str(uuid.uuid4())
-    redis_conn.set(_id, json.dumps({'type': ASR, 'status': 'pending', 'processing_started': round(time.time(), 3)}))
+    redis_conn.hset(_id, mapping = {'type': ASR,
+                                    'status': 'pending',
+                                    'processing_started': round(time.time(), 3)})
+    redis_conn.expire(_id, expiry_time)
     job = threading.Thread(target=decode_and_commit, args=(audio_bytes, _id, decoder_lock))
     job.start()
     return jsonify({'jobid': _id})
@@ -192,11 +208,17 @@ def route_submit_file():
         audio.export(f, format='wav')
         f.seek(0)
         audio_bytes = f.read()
-        redis_conn.set(_id, json.dumps({'type': ASR, 'status': 'pending', 'processing_started': round(time.time(), 3)}))
+        redis_conn.hset(_id, mapping = {'type': ASR,
+                                        'status': 'pending',
+                                        'processing_started': round(time.time(), 3)})
+        redis_conn.expire(_id, expiry_time)
         job = threading.Thread(target=decode_and_commit, args=(audio_bytes, _id, decoder_lock))
         job.start()
     else:
-        redis_conn.set(_id, json.dumps({'type': ASR_SEGMENTS, 'status': 'pending', 'processing_started': round(time.time(), 3)}))
+        redis_conn.hset(_id, mapping = {'type': ASR_SEGMENTS,
+                                        'status': 'pending',
+                                        'processing_started': round(time.time(), 3)})
+        redis_conn.expire(_id, expiry_time)
         job = threading.Thread(target=segmented, args=(audio, _id))
         job.start()
     return jsonify({'jobid': _id, 'file': file_name})
@@ -207,28 +229,29 @@ def route_query_job():
     _id = request.get_data(as_text = True)
     if _id not in redis_conn:
         return jsonify({'error': f'job id not available'})
-    response = json.loads(redis_conn.get(_id))
-    if response.get('type') == ASR:
-        sanitize_response(response)
-        return response
-    if response.get('type') != ASR_SEGMENTS:
+    redis_hash = redis_conn.hgetall(_id)
+    response = json.loads(redis_hash.get('response', '{}'))
+    update_response_from_redis_hash(response, redis_hash)
+    if redis_hash.get('type') == ASR:
+        return jsonify(response)
+    if redis_hash.get('type') != ASR_SEGMENTS:
         return jsonify({'error': 'job id not available'})
-    if 'segments' not in response:
+    if 'segments' not in redis_hash:
         return jsonify({'error': 'internal server error'})
+    response['segments'] = []
+    segments = json.loads(redis_hash.get('segments'))
     processing_finished = 0.0
     running_time = 0.0
-    for i in range(len(response['segments'])):
-        segment_id = response['segments'][i]["jobid"]
+    for segment in segments:
+        segment_id = segment["jobid"]
         if segment_id not in redis_conn:
             return jsonify({'error': f'job id not available'})
-        segment_result = json.loads(redis_conn.get(segment_id))
-        if segment_result['status'] == 'pending':
+        segment_redis_hash = redis_conn.hgetall(segment_id)
+        if segment_redis_hash.get('status') == 'pending':
             return jsonify({'status': 'pending'})
-        duration = float(response['segments'][i]["duration"])
-        if 'model' in segment_result:
-            if 'model' not in response:
-                response['model'] = segment_result['model']
-            del segment_result['model']
+        duration = float(segment["duration"])
+        segment_result = json.loads(segment_redis_hash.get('response'))
+        update_response_from_redis_hash(segment_result, segment_redis_hash)
         segment_result["start"] = round(running_time, 3)
         running_time += duration
         segment_result["stop"] = round(running_time, 3)
@@ -237,10 +260,10 @@ def route_query_job():
             segment_processing_finished = float(segment_result['processing_finished'])
             if segment_processing_finished  > processing_finished:
                 processing_finished = segment_processing_finished
-        response["segments"][i].update(segment_result)
+        response["segments"].append(segment_result)
     response['processing_finished'] = processing_finished
     response['status'] = 'done'
-    sanitize_response(response)
+    response['model'] = model_params
     return jsonify(response)
 
 @app.route('/audio/asr/fi/query_job/tekstiks', methods=["POST"])
@@ -255,16 +278,18 @@ def route_query_job_tekstiks():
         retval["done"] = True
         retval["error"] = {"code": no_job_error, "message": "job id not found"}
         return jsonify(retval)
-    retval.update(json.loads(redis_conn.get(_id)))
-    if retval.get('type') not in (ASR, ASR_SEGMENTS):
+    redis_hash = redis_conn.hgetall(_id)
+    update_response_from_redis_hash(retval, redis_hash)
+    
+    if redis_hash.get('type') not in (ASR, ASR_SEGMENTS):
         retval["done"] = True
         retval["error"] = {"code": no_job_error, "message": "job id not found"}
-        sanitize_response(retval)
         return jsonify(retval)
+    
     retval["result"] = {"speakers": {"S0": {}}, "sections": []}
     running_time = 0.0
     processing_finished = 0.0
-    if 'segments' not in retval:
+    if 'segments' not in redis_hash:
         if retval["status"] != "done":
             retval["done"] = False
             retval["message"] = "In progress"
@@ -272,21 +297,16 @@ def route_query_job_tekstiks():
         retval["done"] = True
         retval["error"] = {"code": no_job_error, "message": "job has incompatible api request"}
         return jsonify(retval)
-        # retval["result"]["sections"].append({"start": running_time, 'speaker': 'S0',
-        #                                      "end": f'{process_response["duration"]:.2f}',
-        #                                      "transcript": process_response["responses"][0]["transcript"],
-        #                                      "words": []})
-        # if "words" in process_response:
-        #     retval["result"]["sections"][0]["words"] = process_response["words"]
-        # return jsonify(retval)
-    
-    for segment in retval['segments']:
+    segments = json.loads(redis_hash["segments"])
+    for segment in segments:
         segment_id = segment["jobid"]
         if segment_id not in redis_conn:
             retval["error"] = {"code": no_job_error, "message": "one or more job segment id's not found"}
             retval["done"] = True
             return jsonify(retval)
-        segment_result = json.loads(redis_conn.get(segment_id))
+        segment_redis_hash = redis_conn.hgetall(segment_id)
+        segment_result = json.loads(segment_redis_hash.get('response'))
+        update_response_from_redis_hash(segment_result, segment_redis_hash)
         if segment_result['status'] != 'done':
             retval["done"] = False
             retval["message"] = "In progress"
@@ -304,8 +324,6 @@ def route_query_job_tekstiks():
     retval["status"] = "done"
     retval["done"] = True
     retval["processing_finished"] = processing_finished
-    del retval['segments']
-    sanitize_response(retval)
     return jsonify(retval)
 
 @app.route('/audio/asr/fi/segmented', methods=["POST"])
@@ -316,7 +334,10 @@ def route_segmented():
     f = BytesIO(audio_bytes)
     audio = pydub.AudioSegment.from_file(f, format="wav")
     _id = str(uuid.uuid4())
-    redis_conn.set(_id, json.dumps({'type': ASR_SEGMENTS, 'status': 'pending', 'processing_started': round(time.time(), 3)}))
+    redis_conn.hset(_id, mapping = {'type': ASR_SEGMENTS,
+                                    'status': 'pending',
+                                    'processing_started': round(time.time(), 3)})
+    redis_conn.expire(_id, expiry_time)
     job = threading.Thread(target=segmented, args=(audio, _id))
     job.start()
     return jsonify({'jobid': _id})
@@ -331,7 +352,6 @@ def route_asr():
     for alt in alts:
         retvals.append({"transcript": alt.transcript, "confidence": alt.confidence})
     response = dict(params)
-    response['time'] = datetime.datetime.now().strftime("%Y-%m-%d %X")
     response['responses'] = sorted(retvals, key = lambda x: x["confidence"],
                                    reverse = True)
   

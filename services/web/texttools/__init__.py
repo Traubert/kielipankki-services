@@ -12,7 +12,9 @@ from . import cnn_sentiment
 app = Flask("kielipankki-services")
 s24_sentiment = cnn_sentiment.s24
 
-redis_conn = redis.Redis(host='redis', port=6379)
+redis_conn = redis.Redis(host='redis', port=6379, decode_responses = True)
+
+expiry_time = 60*60*24*10
 
 def sanitize_response(response):
     response.pop('type', None)
@@ -52,7 +54,7 @@ def nertag():
 def nertag_and_commit(to_tag, args, _id):
     if _id not in redis_conn:
         return
-    redis_entry = json.loads(redis_conn.get(_id))
+    redis_entry = redis_conn.hgetall(_id)
     process_args = ["finnish-nertag"]
     if 'show-analyses' in args and args['show-analyses'].lower() == 'true':
         process_args.append("--show-analyses")
@@ -66,29 +68,33 @@ def nertag_and_commit(to_tag, args, _id):
                 this_sentence.append(line.split('\t'))
         if len(this_sentence) > 0:
             sentences.append(this_sentence)
-    redis_entry['result'] = sentences
-    redis_entry['processing_ended'] = round(time.time(), 3)
+    redis_entry['result'] = json.dumps(sentences)
+    redis_entry['processing_finished'] = round(time.time(), 3)
     redis_entry['status'] = 'done'
-    redis_conn.set(_id, json.dumps(redis_entry))
+    redis_conn.hset(_id, mapping = redis_entry)
 
 @app.route('/text/fi/nertag/query_job', methods=['POST'])
 def nertag_query():
     _id = request.get_data(as_text = True)
     if _id not in redis_conn:
         return jsonify({'error': 'job id not available'})
-    response = json.loads(redis_conn.get(_id))
+    response = redis_conn.hgetall(_id)
     if response.get('type') != 'ner':
         return jsonify({'error': 'job id not available'})
     if response.get('status') == 'pending':
         return jsonify({'status': 'pending'})
     sanitize_response(response)
+    response['result'] = json.loads(response.get('result'))
+    response['processing_started'] = float(response.get('processing_started'))
+    response['processing_finished'] = float(response.get('processing_finished'))
     return jsonify(response)
     
 @app.route('/text/fi/nertag/submit', methods=['POST'])
 def nertag_submit():
     args = request.args
     _id = str(uuid.uuid4())
-    redis_conn.set(_id, json.dumps({'type': 'ner', 'status': 'pending', 'processing_started': round(time.time(), 3)}))
+    redis_conn.hset(_id, mapping = {'type': 'ner', 'status': 'pending', 'processing_started': round(time.time(), 3)})
+    redis_conn.expire(_id, expiry_time)
     to_tag = request.get_data(as_text = True)
     job = threading.Thread(target=nertag_and_commit, args=(to_tag, args, _id))
     job.start()
