@@ -91,7 +91,6 @@ def decode_and_commit(data, _id, lock):
         {"transcript": result.transcript,
          "confidence": round(result.confidence, 5),
          "words": [{"word": word.word, "start": round(word.start_time, 3), "end": round(word.end_time, 3)} for word in result.words]}]
-
     redis_conn.hset(_id, mapping = {
         'status': 'done',
         'processing_finished': round(time.time(), 3),
@@ -194,7 +193,7 @@ def route_submit_file():
             return jsonify({'error': 'could not process file'})
 
     if extension == 'wav':
-        if audio.sample_width > 2 or audio.channels > 1:
+        if audio.sample_width != 2 or audio.channels > 1:
             downsample_tmp_read_f = NamedTemporaryFile(suffix = '.wav')
             audio.export(downsample_tmp_read_f.name, format='wav')
             downsample_tmp_write_f = NamedTemporaryFile(suffix = '.wav')
