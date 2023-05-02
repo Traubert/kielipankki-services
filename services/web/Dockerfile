@@ -7,7 +7,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
         make autoconf automake libtool pkgconf libicu-dev \
 	g++ libglib2.0-dev swig bison flex gettext gawk \
-	wget ca-certificates bzip2 python3-dev unzip git swig;
+	wget ca-certificates bzip2 python3-dev unzip git swig golang;
 
 ENV LANG C.UTF-8
     
@@ -50,6 +50,10 @@ RUN set -eux; \
     cd nlp-tools/word_embeddings/c++; \
     make;
 
+RUN git clone https://github.com/Traubert/conllu-viewer.git; \
+    cd conllu-viewer/bin; \
+    make;
+
 FROM python:3.9-slim-bullseye
 WORKDIR /usr/src/app
 
@@ -74,5 +78,6 @@ RUN pip install -r requirements.txt
 COPY . /usr/src/app/
 COPY --from=builder /usr/src/nlp-tools/word_embeddings/c++/_embutils.so /usr/src/app/texttools/
 COPY --from=builder /usr/src/nlp-tools/word_embeddings/c++/embutils.py /usr/src/app/texttools/
+COPY --from=builder /usr/src/conllu-viewer/bin/conllu2svg /usr/local/bin/
 
 

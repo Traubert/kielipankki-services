@@ -7,6 +7,7 @@ import uuid
 import json
 import threading
 from . import cnn_sentiment
+from tempfile import NamedTemporaryFile
 # from sqlitedict import SqliteDict
 
 app = Flask("kielipankki-services")
@@ -161,3 +162,12 @@ def annotate():
         sentences.append({'postagged': postag_sentences[i], 'nertagged': nertag_sentences[i], 'sentiment': sentiments[i]})
     return jsonify(sentences)
 
+@app.route('/utils/conllu2html', methods=['POST'])
+def conllu2html():
+    data = request.get_data(as_text = True)
+    temporary_conllu_file = NamedTemporaryFile(suffix = ".conllu")
+    temporary_conllu_file.write(data.encode('utf-8'))
+    temporary_conllu_file.flush()
+    process = Popen(["conllu2svg", temporary_conllu_file.name], encoding = "utf-8", stdin = PIPE, stdout = PIPE)
+    out, err = process.communicate()
+    return out
