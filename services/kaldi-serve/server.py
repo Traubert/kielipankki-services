@@ -250,7 +250,7 @@ def route_query_job():
         if segment_redis_hash.get('status') == 'pending':
             return jsonify({'status': 'pending'})
         duration = float(segment["duration"])
-        segment_result = json.loads(segment_redis_hash.get('response'))
+        segment_result = json.loads(segment_redis_hash.get('response', '{}'))
         update_response_from_redis_hash(segment_result, segment_redis_hash)
         segment_result["start"] = round(running_time, 3)
         running_time += duration
@@ -305,7 +305,7 @@ def route_query_job_tekstiks():
             retval["done"] = True
             return jsonify(retval)
         segment_redis_hash = redis_conn.hgetall(segment_id)
-        segment_result = json.loads(segment_redis_hash.get('response'))
+        segment_result = json.loads(segment_redis_hash.get('response', '{}'))
         update_response_from_redis_hash(segment_result, segment_redis_hash)
         if segment_result['status'] != 'done':
             retval["done"] = False
