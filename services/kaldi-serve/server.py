@@ -353,7 +353,7 @@ def route_asr():
     retvals = []
     for alt in alts:
         retvals.append({"transcript": alt.transcript, "confidence": alt.confidence})
-    response = dict(params)
+    response = dict(model_params)
     response['responses'] = sorted(retvals, key = lambda x: x["confidence"],
                                    reverse = True)
   
