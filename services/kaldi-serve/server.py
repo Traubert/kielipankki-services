@@ -23,6 +23,9 @@ MAX_CONTENT_LENGTH = 500*2**20
 
 app = Flask("kaldi-serve")
 
+base_url = "http://nginx:1337/audio/asr/fi"
+submit_url = f"{base_url}/submit"
+
 ASR_SEGMENTS = 'asr_segments'
 ASR = 'asr'
 expiry_time = 60*60*24*10
@@ -61,7 +64,6 @@ model_params = toml.load("model-spec.toml")["model"][0]
 decoder = Decoder(model)
 decoder_lock = threading.Lock()
 
-submit_url = 'http://nginx:1337/audio/asr/fi/submit'
 
 def valid_wav_header(data):
     if len(data) < 44:
