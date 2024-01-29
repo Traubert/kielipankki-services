@@ -8,6 +8,8 @@ import json
 import threading
 from . import cnn_sentiment
 from tempfile import NamedTemporaryFile
+import logging
+import requests
 # from sqlitedict import SqliteDict
 
 app = Flask("kielipankki-services")
@@ -16,6 +18,8 @@ s24_sentiment = cnn_sentiment.s24
 redis_conn = redis.Redis(host='redis', port=6379, decode_responses = True)
 
 expiry_time = 60*60*24*10
+
+base_url = "http://nginx:1337/text/fi"
 
 def sanitize_response(response):
     response.pop('type', None)
