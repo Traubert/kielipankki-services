@@ -4,7 +4,7 @@ WORKDIR /usr/src/hfst
 
 RUN set -eux; \
     apt-get update; \
-    sudo apt-get install -y --no-install-recommends \
+    apt-get install -y --no-install-recommends \
     make autoconf automake libtool pkgconf libicu-dev \
     g++ libglib2.0-dev swig bison flex gettext gawk \
     wget ca-certificates bzip2 python3-dev unzip git swig golang;
