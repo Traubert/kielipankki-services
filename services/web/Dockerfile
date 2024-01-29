@@ -1,13 +1,13 @@
-FROM debian:stable-slim as builder
+FROM debian:bullseye-slim as builder
 
 WORKDIR /usr/src/hfst
 
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends \
-        make autoconf automake libtool pkgconf libicu-dev \
-	g++ libglib2.0-dev swig bison flex gettext gawk \
-	wget ca-certificates bzip2 python3-dev unzip git swig golang;
+    sudo apt-get install -y --no-install-recommends \
+    make autoconf automake libtool pkgconf libicu-dev \
+    g++ libglib2.0-dev swig bison flex gettext gawk \
+    wget ca-certificates bzip2 python3-dev unzip git swig golang;
 
 ENV LANG C.UTF-8
     
