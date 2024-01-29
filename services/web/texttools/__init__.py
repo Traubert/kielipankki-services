@@ -171,3 +171,42 @@ def conllu2html():
     process = Popen(["conllu2svg", temporary_conllu_file.name], encoding = "utf-8", stdin = PIPE, stdout = PIPE)
     out, err = process.communicate()
     return out
+
+@app.route('/text/fi/health', methods=['GET'])
+def route_health():
+    response = {"status": "UP",
+                "checks": {"redis": "DOWN"}}
+    try:
+        if redis_conn.ping():
+            response["checks"]["redis"] = "UP"
+    except:
+        pass
+    return jsonify(response)
+
+@app.route('/text/fi/self_test', methods=["GET"])
+def route_self_test():
+    response = {"status": "UP",
+                "checks": {
+                    "redis": "DOWN",
+                    "tagtools": "DOWN",
+                    "sentiment": "DOWN"}}
+    try:
+        if redis_conn.ping():
+            response["checks"]["redis"] = "UP"
+    except Exception as e:
+        logging.error(e)
+    try:
+        tagger = Popen(["finnish-postag"], encoding = 'utf-8', stdin = PIPE, stdout = PIPE)
+        out, err = tagger.communicate("Koira käveli kadulla.")
+        assert len(out) > 0
+        response["checks"]["tagtools"] = "UP"
+    except Exception as e:
+        logging.error(e, type(e))
+
+    try:
+        assert "sentiment" in json.loads(requests.post(f"{base_url}/sentiment", data = "Kiva testi!", timeout = 3).text)
+        response["checks"]["sentiment"] = "UP"
+    except Exception as e:
+        logging.error(e)
+
+    return response

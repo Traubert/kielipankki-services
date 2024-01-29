@@ -120,3 +120,14 @@ def route_query_job():
         redis_hash['processing_finished'] = float(
             redis_hash['processing_finished'])
     return jsonify(redis_hash)
+
+@app.route('/audio/align/fi/health', methods=["GET"])
+def route_health():
+    response = {"status": "UP",
+                "checks": {"redis": "DOWN"}}
+    try:
+        if redis_conn.ping():
+            response["checks"]["redis"] = "UP"
+    except:
+        pass
+    return jsonify(response)

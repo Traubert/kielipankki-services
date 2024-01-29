@@ -362,3 +362,70 @@ def route_asr():
 @app.route('/audio/asr/fi/queue', methods=["GET"])
 def route_queue():
     return jsonify({})
+
+@app.route('/audio/asr/fi/health', methods=["GET"])
+def route_health():
+    response = {"status": "UP",
+                "checks": {"redis": "DOWN"}}
+    try:
+        if redis_conn.ping():
+            response["checks"]["redis"] = "UP"
+    except:
+        pass
+    return jsonify(response)
+
+@app.route('/audio/asr/fi/self_test', methods=["GET"])
+def route_self_test():
+    try:
+        response = json.loads(requests.get(f'{base_url}/health', timeout = 3).text)
+    except Exception as e:
+        logging.error(str(e))
+        return jsonify({"status": "DOWN"})
+    response["checks"]["decoding"] = "DOWN"
+    response["checks"]["submit_file"] = "DOWN"
+    response["checks"]["query_response"] = "DOWN"
+    test_mp3_filename = "test/puhetta.mp3"
+    test_wav_filename = "test/puhetta.wav"
+    immediate_asr_url = f'{base_url}'
+    submit_file_url = f'{base_url}/submit_file'
+    query_url = f'{base_url}/query_job'
+
+    try:
+        submit_file_response = requests.post(
+            submit_file_url,
+            files = {'file': (test_mp3_filename.split('/')[-1],
+                              open(test_mp3_filename, 'rb'))},
+            timeout = 3)
+        submit_file_response = json.loads(submit_file_response.text)
+        assert 'jobid' in submit_file_response
+        response["checks"]["submit_file"] = "UP"
+    except Exception as e:
+        logging.error(str(e))
+        submit_file_response = None
+
+    try:
+        immediate_asr_response = requests.post(immediate_asr_url, data = open(test_wav_filename, "rb").read(), timeout = 3)
+        assert 'responses' in json.loads(immediate_asr_response.text)
+        response["checks"]["decoding"] = "UP"
+    except Exception as e:
+        logging.error(str(e))
+        pass
+
+    if not submit_file_response:
+        return(jsonify(response))
+    try:
+        time_increment = 0.5
+        time_waited = 0
+        while time_waited <= 3:
+            time.sleep(time_increment)
+            time_waited += time_increment
+            query_file_response = requests.post(
+                query_url, data = submit_file_response['jobid'])
+            query_file_response = json.loads(query_file_response.text)
+            if query_file_response['status'] == 'done':
+                response["checks"]["query_response"] = "UP"
+                return jsonify(response)
+    except Exception as e:
+        logging.error(str(e))
+        pass
+    return jsonify(response)
